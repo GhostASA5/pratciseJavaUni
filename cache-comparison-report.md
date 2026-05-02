@@ -1,5 +1,12 @@
 # Отчет: сравнение стратегий кеширования
 
+## Стек
+- **Java**: 17
+- **Framework**: Spring Boot 3.3.x
+- **Кеш**: Redis 7 в Docker
+- **БД**: Postgres 16 в Docker, порт на хосте `5462`
+- **Load-generator**: JUnit-тест `CacheBenchmarkTest`
+
 ## Что реализовано
 Реализовано одно REST-приложение с переключением стратегии через параметр `cache.strategy`.
 
@@ -74,4 +81,10 @@ CSV-файлы с результатами:
 - `result-BACK-BALANCED-200.csv`
 - `result-BACK-WRITE_HEAVY-200.csv`
 
+## Как запустить
+Запуск инфраструктуры:
+- `docker-compose up -d`
+
+Запуск тестов:
+- `./mvnw test`
 

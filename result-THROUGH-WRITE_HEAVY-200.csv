@@ -1,0 +1,2 @@
+strategy,mix,ratePerSecond,durationSeconds,totalRequests,errors,throughput,avgLatencyMs,p95LatencyMs,dbReads,dbWrites,cacheHits,cacheMisses,cacheHitRate,writeBackBufferSize,writeBackDropped,writeBackFlushes,writeBackFlushedEntries
+THROUGH,WRITE_HEAVY,200,30,30800,0,1026.67,7.14,12,24714,24714,6086,0,1.000000,0,0,0,0

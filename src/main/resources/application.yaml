@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: cache-comparison-practice
+
+  datasource:
+    url: jdbc:postgresql://localhost:5462/cache_practice
+    username: postgres
+    password: postgres
+
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+server:
+  port: 8080
+
+cache:
+  strategy: ASIDE
+  ttl-seconds: 300
+  writeback:
+    flush-interval-ms: 1000
+    max-buffer-size: 100000
+
+seed:
+  enabled: true
+  items: 10000

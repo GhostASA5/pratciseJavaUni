@@ -1,7 +1,0 @@
-test;sent;received;errors;avg_latency(ms);p95_latency(ms);max(ms)
-result-rabbit-1000-10240;92000;92000;0;1;22;5
-result-rabbit-5000-1024;170000;170000;0;0;52;1
-result-rabbit-10000-1024;170000;170000;0;0;51;1
-result-redis-1000-10240;1000;1000;0;186;78;1284
-result-redis-5000-1024;5000;5000;0;60;19;483
-result-redis-10000-1024;10000;10000;0;53;32;585
