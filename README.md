@@ -1,77 +1,165 @@
-# Отчет: сравнение стратегий кеширования
+# Отчёт: практика аномалий изоляции SQL
 
-## Что реализовано
-Реализовано одно REST-приложение с переключением стратегии через параметр `cache.strategy`.
+**Дата прогона автотестов:** 2026-05-12 (локально: `docker compose up -d postgres`, затем `mvn -DRUN_ISOLATION_IT=true -Dtest=IsolationAnomaliesJdbcIT test`, все 4 теста — успешно).
 
-Поддерживаемые стратегии:
-- `ASIDE` — Lazy Loading / Cache-Aside / Write-Around: чтение через кеш, при промахе чтение из БД и запись в кеш, запись сразу в БД с инвалидацией кеша.
-- `THROUGH` — Write-Through: чтение через кеш, запись синхронно в БД и кеш.
-- `BACK` — Write-Back: чтение через кеш, запись сначала в кеш и буфер, отправка в БД позже через scheduled-flusher.
+## Выбранные аномалии
 
-REST API:
-- `GET /items/{id}` — чтение записи.
-- `PUT /items/{id}` — обновление записи, тело запроса: `{ "value": "..." }`.
-- `GET /metrics` — метрики приложения: обращения к БД, cache hit/miss, hit rate, состояние write-back буфера.
+| Аномалия | СУБД / примечание |
+|----------|-------------------|
+| Dirty read (грязное чтение) | PostgreSQL — демонстрация **отсутствия** грязного чтения; MySQL — классическое грязное чтение при `READ UNCOMMITTED` |
+| Non-repeatable read (неповторяемое чтение) | PostgreSQL, `READ COMMITTED` |
+| Phantom read (фантомное чтение) | PostgreSQL, `READ COMMITTED` |
+| Lost update (потерянное обновление) | PostgreSQL, `READ COMMITTED` |
 
-## Описание тестов
-Все стратегии проверялись одинаковым JUnit load-generator'ом.
+## Подготовка окружения
 
-Общие параметры:
-- **Размер датасета**: `10000` записей.
-- **Длительность одного прогона**: `30` секунд.
-- **Целевая интенсивность**: `200` запросов в секунду.
-- **Количество ошибок во всех прогонах**: `0`.
+1. Поднять PostgreSQL: из корня репозитория выполнить `docker compose up -d postgres`.
+2. Применить схему и данные:
 
-Режимы нагрузки:
-- `READ_HEAVY` — примерно `80%` чтений и `20%` записей.
-- `BALANCED` — примерно `50%` чтений и `50%` записей.
-- `WRITE_HEAVY` — примерно `20%` чтений и `80%` записей.
+   ```bash
+   psql -h localhost -p 5462 -U postgres -d cache_practice -f src/main/resources/sql/isolation/00_schema_and_data.sql
+   ```
 
-Измеряемые метрики:
-- **Throughput** — фактическая пропускная способность, `req/sec`.
-- **Avg latency** — средняя задержка запроса, `ms`.
-- **p95 latency** — 95-й перцентиль задержки, `ms`.
-- **DB reads / DB writes** — количество чтений и записей в БД.
-- **Cache hit rate** — доля успешных чтений из кеша.
-- **Write-back metrics** — размер буфера, количество flush-операций и выгруженных записей.
+3. (Опционально для dirty read в MySQL) Поднять MySQL: `docker compose up -d mysql`, затем скрипт из `src/main/resources/sql/isolation/mysql/00_dirty_read.sql` — см. раздел ниже.
 
-## Итоговая таблица результатов
+---
 
-| Стратегия | Нагрузка | Запросов | Throughput, req/sec | Avg latency, ms | p95, ms | DB reads | DB writes | DB total | Cache hits | Cache misses | Hit rate | WB buffer | WB dropped | WB flushes | WB flushed |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `ASIDE` | `READ_HEAVY` | 24200 | 806.67 | 9.22 | 23 | 14633 | 4910 | 19543 | 9567 | 9723 | 49.60% | 0 | 0 | 0 | 0 |
-| `ASIDE` | `BALANCED` | 29400 | 980.00 | 7.51 | 15 | 20556 | 14757 | 35313 | 8844 | 5799 | 60.40% | 0 | 0 | 0 | 0 |
-| `ASIDE` | `WRITE_HEAVY` | 30400 | 1013.33 | 7.25 | 13 | 28521 | 24383 | 52904 | 1879 | 4138 | 31.23% | 0 | 0 | 0 | 0 |
-| `THROUGH` | `READ_HEAVY` | 57600 | 1920.00 | 3.45 | 9 | 17894 | 11529 | 29423 | 39706 | 6365 | 86.18% | 0 | 0 | 0 | 0 |
-| `THROUGH` | `BALANCED` | 44000 | 1466.67 | 4.77 | 10 | 22075 | 22075 | 44150 | 21925 | 0 | 100.00% | 0 | 0 | 0 | 0 |
-| `THROUGH` | `WRITE_HEAVY` | 30800 | 1026.67 | 7.14 | 12 | 24714 | 24714 | 49428 | 6086 | 0 | 100.00% | 0 | 0 | 0 | 0 |
-| `BACK` | `READ_HEAVY` | 106800 | 3560.00 | 1.55 | 3 | 26 | 0 | 26 | 85373 | 26 | 99.97% | 2905 | 0 | 7 | 15494 |
-| `BACK` | `BALANCED` | 108600 | 3620.00 | 1.50 | 3 | 0 | 0 | 0 | 54092 | 0 | 100.00% | 7064 | 0 | 4 | 22635 |
-| `BACK` | `WRITE_HEAVY` | 101200 | 3373.33 | 1.67 | 3 | 0 | 0 | 0 | 20079 | 0 | 100.00% | 9590 | 0 | 3 | 19920 |
+## 1. Dirty read
 
-## Анализ результатов
-`ASIDE` показывает наиболее простое и предсказуемое поведение, но при частых записях hit rate падает, потому что запись инвалидирует кеш. Поэтому в `WRITE_HEAVY` режиме у него максимальное количество обращений к БД среди всех стратегий.
+### Шаги воспроизведения (PostgreSQL)
 
-`THROUGH` хорошо держит кеш актуальным после записей. За счет этого в `BALANCED` и `WRITE_HEAVY` режимах hit rate достигает `100%`, потому что обновленные данные сразу попадают в Redis. Минус стратегии — каждая запись синхронно идет и в БД, и в кеш, поэтому запись дороже, чем у write-back.
+Следуйте файлам [01_dirty_read.md](src/main/resources/sql/isolation/01_dirty_read.md) и [01_dirty_read.sql](src/main/resources/sql/isolation/01_dirty_read.sql): два сеанса `psql`, в сеансе A — `UPDATE` без `COMMIT`, в сеансе B — `SELECT` при `READ UNCOMMITTED`.
 
-`BACK` дал максимальный throughput и минимальную задержку во всех режимах, потому что запись не ждет синхронной записи в БД. Но это достигается ценой eventual consistency: часть данных остается в write-back буфере (`WB buffer`) и доезжает до БД позже через flush. Для такой стратегии обязательно нужно следить за размером буфера, количеством flush-операций и потерянными записями (`WB dropped`).
+### Полученный результат
 
-## Выводы
-- **Лучше для чтения**: `BACK` и `THROUGH`, потому что они дают высокий cache hit rate и низкую задержку.
-- **Лучше для записи по скорости ответа**: `BACK`, так как запись сначала попадает в кеш/буфер и не блокируется на БД.
-- **Лучше для записи по консистентности**: `THROUGH`, так как данные сразу сохраняются и в кеш, и в БД.
-- **Лучше для смешанной нагрузки**: `BACK` по производительности, `THROUGH` если важнее консистентность.
+При ручном прогоне в двух окнах `psql` зафиксируйте скриншоты сеанса A (открытая транзакция после `UPDATE`) и сеанса B (`SELECT` показывает **100**, а не незафиксированные **999**).
 
-## Артефакты тестов
-CSV-файлы с результатами:
-- `result-ASIDE-READ_HEAVY-200.csv`
-- `result-ASIDE-BALANCED-200.csv`
-- `result-ASIDE-WRITE_HEAVY-200.csv`
-- `result-THROUGH-READ_HEAVY-200.csv`
-- `result-THROUGH-BALANCED-200.csv`
-- `result-THROUGH-WRITE_HEAVY-200.csv`
-- `result-BACK-READ_HEAVY-200.csv`
-- `result-BACK-BALANCED-200.csv`
-- `result-BACK-WRITE_HEAVY-200.csv`
+**Прогон JDBC-теста `postgresqlDoesNotAllowDirtyRead` (лог консоли):**
 
+```text
+[SESSION2] UPDATE 999 без COMMIT
+[SESSION1] SELECT balance=100 (ожидаем 100, не 999)
+[SESSION2] ROLLBACK
+```
 
+Вывод: при незафиксированном изменении во втором соединении первое соединение по-прежнему читает зафиксированное значение **100** — грязного чтения в PostgreSQL нет.
+
+### Как избежать
+
+В PostgreSQL грязное чтение и так исключено на уровне движка. В СУБД, где доступен `READ UNCOMMITTED`, не использовать его для бизнес-логики; держать уровень не ниже `READ COMMITTED`.
+
+### Классический dirty read (MySQL)
+
+**Вставьте скриншот:** два сеанса `mysql` по инструкции в [mysql/00_dirty_read.sql](src/main/resources/sql/isolation/mysql/00_dirty_read.sql) — при `READ UNCOMMITTED` второй сеанс может увидеть незафиксированное значение.
+
+---
+
+## 2. Non-repeatable read
+
+### Шаги воспроизведения
+
+Файл [02_non_repeatable_read.sql](src/main/resources/sql/isolation/02_non_repeatable_read.sql): сеанс 1 — `BEGIN`, два `SELECT` одной строки с паузой; между ними сеанс 2 — `UPDATE` и `COMMIT`.
+
+### Полученный результат
+
+Для отчёта вручную: скриншоты первого и второго `SELECT` в сеансе 1 (ожидаемо **100**, затем **200**).
+
+**Прогон JDBC-теста `nonRepeatableRead`:**
+
+```text
+[SESSION1] первый SELECT balance=100
+[SESSION2] UPDATE 200 COMMIT
+[SESSION1] второй SELECT balance=200
+```
+
+В одной транзакции `READ COMMITTED` повторное чтение той же строки после коммита другой транзакции даёт новое значение — неповторяемое чтение.
+
+### Как избежать
+
+Повысить уровень изоляции до `REPEATABLE READ` или `SERIALIZABLE` (с учётом особенностей СУБД); при необходимости — `SELECT ... FOR SHARE` / `FOR UPDATE` для стабильного чтения строки в рамках транзакции.
+
+---
+
+## 3. Phantom read
+
+### Шаги воспроизведения
+
+Файл [03_phantom_read.sql](src/main/resources/sql/isolation/03_phantom_read.sql): сеанс 1 — два одинаковых `SELECT` по предикату `amount > 100`; между ними сеанс 2 — `INSERT` строки, попадающей под предикат.
+
+### Полученный результат
+
+Вручную: скриншоты первого запроса (0 строк) и второго (появилась строка с `amount > 100`).
+
+**Прогон JDBC-теста `phantomRead`:**
+
+```text
+[SESSION1] первый COUNT (amount > 100)=0
+[SESSION2] INSERT amount=150 COMMIT
+[SESSION1] второй COUNT=1
+```
+
+В той же транзакции `READ COMMITTED` повторный подсчёт по предикату видит вставленную другой транзакцией строку — фантом.
+
+### Как избежать
+
+`SERIALIZABLE` / стратегии сериализации в конкретной СУБД; согласованные блокировки диапазона там, где поддерживается; денормализация или материализованные снимки для отчётов без конкурентных вставок в тот же предикат.
+
+---
+
+## 4. Lost update
+
+### Шаги воспроизведения
+
+Файл [04_lost_update.sql](src/main/resources/sql/isolation/04_lost_update.sql): оба сеанса читают баланс и выполняют `UPDATE` до «прочитанное минус 30» без учёта параллельного изменения.
+
+### Полученный результат
+
+Вручную: скриншот итогового `SELECT` — баланс **70** вместо ожидаемых **40** после двух списаний по 30.
+
+**Прогон JDBC-теста `lostUpdate`:**
+
+```text
+[SESSION1] прочитал balance=100
+[SESSION2] прочитал balance=100
+[SESSION2] UPDATE 70 COMMIT
+[SESSION1] UPDATE 70 COMMIT
+[CHECK] итоговый balance=70 (ожидаем 70 — потеря одного списания)
+```
+
+Обе транзакции опирались на прочитанное **100** и записали **70**; одно списание потеряно.
+
+### Как избежать
+
+Атомарное выражение `UPDATE isolation_wallet SET balance = balance - 30 WHERE id = 1`; блокировка строки `SELECT ... FOR UPDATE`; оптимистичные блокировки по версии (`WHERE id = 1 AND version = ?`).
+
+---
+
+## Автоматизация (логи для отчёта)
+
+Интеграционный тест с двумя JDBC-соединениями: [IsolationAnomaliesJdbcIT.java](src/test/java/com/example/cachepractice/sqlisolation/IsolationAnomaliesJdbcIT.java). Тесты выполняются только при явном флаге JVM (чтобы обычный `mvn test` не требовал PostgreSQL для этого класса):
+
+```bash
+docker compose up -d postgres
+mvn -DRUN_ISOLATION_IT=true -Dtest=IsolationAnomaliesJdbcIT test
+```
+
+Полный вывод консоли Surefire (объединённый лог всех четырёх сценариев, порядок строк может отличаться от порядка тестов):
+
+```text
+[SESSION1] прочитал balance=100
+[SESSION2] прочитал balance=100
+[SESSION2] UPDATE 70 COMMIT
+[SESSION1] UPDATE 70 COMMIT
+[CHECK] итоговый balance=70 (ожидаем 70 — потеря одного списания)
+[SESSION1] первый SELECT balance=100
+[SESSION2] UPDATE 200 COMMIT
+[SESSION1] второй SELECT balance=200
+[SESSION2] UPDATE 999 без COMMIT
+[SESSION1] SELECT balance=100 (ожидаем 100, не 999)
+[SESSION2] ROLLBACK
+[SESSION1] первый COUNT (amount > 100)=0
+[SESSION2] INSERT amount=150 COMMIT
+[SESSION1] второй COUNT=1
+```
+
+При необходимости для зачёта добавьте скриншот окна терминала с этим выводом или скриншот отчёта Surefire (`target/surefire-reports/`).
