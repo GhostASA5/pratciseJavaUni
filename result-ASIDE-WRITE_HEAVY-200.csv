@@ -1,2 +1,0 @@
-strategy,mix,ratePerSecond,durationSeconds,totalRequests,errors,throughput,avgLatencyMs,p95LatencyMs,dbReads,dbWrites,cacheHits,cacheMisses,cacheHitRate,writeBackBufferSize,writeBackDropped,writeBackFlushes,writeBackFlushedEntries
-ASIDE,WRITE_HEAVY,200,30,30400,0,1013.33,7.25,13,28521,24383,1879,4138,0.312282,0,0,0,0

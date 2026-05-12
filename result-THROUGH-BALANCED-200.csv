@@ -1,2 +1,0 @@
-strategy,mix,ratePerSecond,durationSeconds,totalRequests,errors,throughput,avgLatencyMs,p95LatencyMs,dbReads,dbWrites,cacheHits,cacheMisses,cacheHitRate,writeBackBufferSize,writeBackDropped,writeBackFlushes,writeBackFlushedEntries
-THROUGH,BALANCED,200,30,44000,0,1466.67,4.77,10,22075,22075,21925,0,1.000000,0,0,0,0
